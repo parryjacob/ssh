@@ -19,9 +19,9 @@ func (srv *Server) serveOnce(l net.Listener) error {
 	if e != nil {
 		return e
 	}
-	srv.channelHandlers = map[string]ChannelHandler{
-		"session":      sessionHandler,
-		"direct-tcpip": directTcpipHandler,
+	srv.ChannelHandlers = map[string]ChannelHandler{
+		"session":      DefaultSessionHandler,
+		"direct-tcpip": DirectTCPIPHandler,
 	}
 	srv.handleConn(conn)
 	return nil

@@ -1,7 +1,6 @@
 package ssh
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -44,6 +43,9 @@ type Session interface {
 	// which considers quoting not just whitespace.
 	Command() []string
 
+	// RawCommand returns the exact command that was provided by the user.
+	RawCommand() string
+
 	// PublicKey returns the PublicKey used to authenticate. If a public key was not
 	// used it will return nil.
 	PublicKey() PublicKey
@@ -77,7 +79,7 @@ type Session interface {
 // when there is no signal channel specified
 const maxSigBufSize = 128
 
-func sessionHandler(srv *Server, conn *gossh.ServerConn, newChan gossh.NewChannel, ctx Context) {
+func DefaultSessionHandler(srv *Server, conn *gossh.ServerConn, newChan gossh.NewChannel, ctx Context) {
 	ch, reqs, err := newChan.Accept()
 	if err != nil {
 		// TODO: trigger event callback
@@ -90,6 +92,8 @@ func sessionHandler(srv *Server, conn *gossh.ServerConn, newChan gossh.NewChanne
 		ptyCb:     srv.PtyCallback,
 		sessReqCb: srv.SessionRequestCallback,
 		ctx:       ctx,
+
+		subsystemHandlers: srv.SubsystemHandlers,
 	}
 	sess.handleRequests(reqs)
 }
@@ -106,25 +110,28 @@ type session struct {
 	env       []string
 	ptyCb     PtyCallback
 	sessReqCb SessionRequestCallback
-	cmd       []string
+	rawCmd    string
 	ctx       Context
 	sigCh     chan<- Signal
 	sigBuf    []Signal
+
+	subsystemHandlers map[string]SubsystemHandler
 }
 
 func (sess *session) Write(p []byte) (n int, err error) {
-	if sess.pty != nil {
-		m := len(p)
-		// normalize \n to \r\n when pty is accepted.
-		// this is a hardcoded shortcut since we don't support terminal modes.
-		p = bytes.Replace(p, []byte{'\n'}, []byte{'\r', '\n'}, -1)
-		p = bytes.Replace(p, []byte{'\r', '\r', '\n'}, []byte{'\r', '\n'}, -1)
-		n, err = sess.Channel.Write(p)
-		if n > m {
-			n = m
-		}
-		return
-	}
+	// If change the \n to \r\n, then zmodem(rzsz) will be error
+	//if sess.pty != nil {
+	//	m := len(p)
+	//	// normalize \n to \r\n when pty is accepted.
+	//	// this is a hardcoded shortcut since we don't support terminal modes.
+	//	p = bytes.Replace(p, []byte{'\n'}, []byte{'\r', '\n'}, -1)
+	//	p = bytes.Replace(p, []byte{'\r', '\r', '\n'}, []byte{'\r', '\n'}, -1)
+	//	n, err = sess.Channel.Write(p)
+	//	if n > m {
+	//		n = m
+	//	}
+	//	return
+	//}
 	return sess.Channel.Write(p)
 }
 
@@ -179,8 +186,13 @@ func (sess *session) Environ() []string {
 	return append([]string(nil), sess.env...)
 }
 
+func (sess *session) RawCommand() string {
+	return sess.rawCmd
+}
+
 func (sess *session) Command() []string {
-	return append([]string(nil), sess.cmd...)
+	cmd, _ := shlex.Split(sess.rawCmd, true)
+	return append([]string(nil), cmd...)
 }
 
 func (sess *session) Pty() (Pty, <-chan Window, bool) {
@@ -214,12 +226,12 @@ func (sess *session) handleRequests(reqs <-chan *gossh.Request) {
 
 			var payload = struct{ Value string }{}
 			gossh.Unmarshal(req.Payload, &payload)
-			sess.cmd, _ = shlex.Split(payload.Value, true)
+			sess.rawCmd = payload.Value
 
 			// If there's a session policy callback, we need to confirm before
 			// accepting the session.
 			if sess.sessReqCb != nil && !sess.sessReqCb(sess, req.Type) {
-				sess.cmd = nil
+				sess.rawCmd = ""
 				req.Reply(false, nil)
 				continue
 			}
@@ -292,6 +304,20 @@ func (sess *session) handleRequests(reqs <-chan *gossh.Request) {
 			// TODO: option/callback to allow agent forwarding
 			SetAgentRequested(sess.ctx)
 			req.Reply(true, nil)
+		case "subsystem":
+			subname := string(req.Payload[4:])
+			handler, ok := sess.subsystemHandlers[subname]
+			if !ok {
+				req.Reply(false, nil)
+			}
+			sess.handled = true
+			req.Reply(true, nil)
+
+			go func() {
+				handler(sess)
+				sess.Exit(0)
+			}()
+
 		default:
 			// TODO: debug log
 			req.Reply(false, nil)

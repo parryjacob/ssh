@@ -35,6 +35,9 @@ type Option func(*Server) error
 // Handler is a callback for handling established SSH sessions.
 type Handler func(Session)
 
+// SubsystemHandler is a callback for handling session subsystem request
+type SubsystemHandler func(Session)
+
 // PublicKeyHandler is a callback for performing public key authentication.
 type PublicKeyHandler func(ctx Context, key PublicKey) bool
 
@@ -61,8 +64,8 @@ type LocalPortForwardingCallback func(ctx Context, destinationHost string, desti
 // ReversePortForwardingCallback is a hook for allowing reverse port forwarding
 type ReversePortForwardingCallback func(ctx Context, bindHost string, bindPort uint32) bool
 
-// DefaultServerConfigCallback is a hook for creating custom default server configs
-type DefaultServerConfigCallback func(ctx Context) *gossh.ServerConfig
+// ServerConfigCallback is a hook for creating custom default server configs
+type ServerConfigCallback func(ctx Context) *gossh.ServerConfig
 
 // Window represents the size of a PTY window.
 type Window struct {
